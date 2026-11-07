@@ -19,6 +19,8 @@ type Tool struct {
 	Paths        []string `toml:"paths"`  // files or directories, relative to $HOME
 	Ignore       []string `toml:"ignore"` // globs on basename or relative path; "dir/**" excludes a subtree
 	FontPatterns []string `toml:"fonts"`  // regexes whose first group is a font family name
+	Brew         []string `toml:"brew"`   // Homebrew formulae the tool needs ("user/tap/name" auto-taps)
+	Cask         []string `toml:"cask"`   // Homebrew casks the tool needs
 }
 
 // Font is one entry of fonts/fonts.toml.

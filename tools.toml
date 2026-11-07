@@ -5,6 +5,10 @@
 #   ignore  globs matched against the file name or its relative path;
 #           "dir/**" excludes a whole subtree
 #   fonts   regexes; the first group is a font family the config uses
+#   brew    Homebrew formulae the tool needs ("user/tap/name" auto-taps)
+#   cask    Homebrew casks the tool needs
+#           `dot install` installs whichever are missing; a binary of the same
+#           name on PATH, or the cask's app in /Applications, counts as present
 
 # never tracked for any tool
 ignore = [".DS_Store", "*.sock", "*.log", "*.lock", "*.dot-tmp", "*.swp", "*.swo"]
@@ -14,6 +18,9 @@ description = "Ghostty terminal"
 # Only ~/.config/ghostty: the macOS config.ghostty in Application Support
 # would load on top of it, so keep everything in one file.
 paths = [".config/ghostty"]
+cask = ["ghostty"]
+# helpers that generate parts of the config
+brew = ["vukkt/tap/iglass", "mattj85/spookiui/spookiui"]
 ignore = ["*.bak"]
 fonts = ['^\s*font-family(?:-bold|-italic|-bold-italic)?\s*=\s*"?([^"#]*?)"?\s*$']
 
@@ -24,6 +31,8 @@ paths = [
   ".config/herdr-app/settings.json",
   ".config/herdr-app/keys.json",
 ]
+brew = ["herdr"]
+cask = ["herdr-app"]
 fonts = ['"font_family"\s*:\s*"([^"]+)"']
 
 [tools.vim]
@@ -31,3 +40,28 @@ description = "Vim / Neovim"
 paths = [".vimrc", ".gvimrc", ".vim", ".config/nvim"]
 ignore = [".netrwhist", "undo/**", "swap/**", "backup/**", "view/**", "plugged/**", "bundle/**", "pack/**", "lazy-lock.json"]
 fonts = ['^\s*set\s+guifont=([^:,]+)', 'guifont\s*=\s*"([^:,"]+)']
+
+[tools.zsh]
+description = "zsh startup files"
+paths = [".zshrc", ".zprofile", ".zshenv", ".zlogin"]
+brew = ["zsh-syntax-highlighting", "autojump"]
+
+[tools.oh-my-zsh]
+description = "Oh My Zsh custom plugins, themes and snippets"
+# Only $ZSH_CUSTOM: the rest of ~/.oh-my-zsh is the framework itself
+# (installed by bootstrap.sh) plus generated caches and completions.
+paths = [".oh-my-zsh/custom"]
+ignore = ["example.zsh", "example.zsh-theme", "plugins/example/**"]
+
+[tools.oh-my-posh]
+description = "Oh My Posh prompt themes"
+# Not wired up yet: the `oh-my-posh init` line in .zshrc is commented out
+# and the prompt is pure. Put a theme here and point --config at it.
+paths = [".config/oh-my-posh"]
+brew = ["oh-my-posh"]
+
+[tools.pure]
+description = "Pure zsh prompt"
+# Pure has no config file of its own: its zstyles live here, sourced from .zshrc.
+paths = [".config/zsh/pure.zsh"]
+brew = ["pure"]

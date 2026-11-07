@@ -20,6 +20,7 @@ const (
 	scrFiles
 	scrDiff
 	scrFonts
+	scrInstall
 )
 
 var (
@@ -75,6 +76,12 @@ type model struct {
 	w, h     int
 	dirty    int
 	conflict []*Entry // queue of merges waiting for the editor
+
+	// install screen
+	inst    InstallOpts // Tools is always non-nil here: the ticked tools
+	ic      int
+	pkgs    []*Pkg
+	instOut string // "back" or "quit": where esc goes
 }
 
 // ── messages ───────────────────────────────────────────────────────────────
@@ -83,6 +90,8 @@ type refreshMsg struct {
 	dirty int
 }
 type fontsMsg []*FontRow
+type pkgsMsg []*Pkg
+type installDoneMsg struct{ err error }
 type doneMsg struct {
 	text      string
 	err       error
@@ -101,7 +110,48 @@ func runTUI(r *Repo) error {
 	return err
 }
 
-func (m *model) Init() tea.Cmd { return m.refresh() }
+// runTUIInstall opens the TUI straight on the install picker (dot install --pick).
+func runTUIInstall(r *Repo, o InstallOpts) error {
+	m := &model{repo: r, busy: "scanning…", instOut: "quit"}
+	m.openInstall(o)
+	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	return err
+}
+
+func (m *model) Init() tea.Cmd {
+	if m.scr == scrInstall {
+		return tea.Batch(m.refresh(), m.loadPkgs())
+	}
+	return m.refresh()
+}
+
+// openInstall shows the install picker; a nil o.Tools ticks every tool.
+func (m *model) openInstall(o InstallOpts) {
+	if o.Tools == nil {
+		o.Tools = Selection{}
+		for _, t := range m.repo.Tools {
+			o.Tools[t.Name] = true
+		}
+	}
+	m.inst, m.ic, m.scr, m.msg = o, 0, scrInstall, ""
+}
+
+func (m *model) loadPkgs() tea.Cmd {
+	r := m.repo
+	return func() tea.Msg { return pkgsMsg(r.Packages()) }
+}
+
+// installCmd runs `dot install <ticked tools>` in the foreground so brew's
+// output (and any sudo prompt) is visible, then waits for enter.
+func (m *model) installCmd() tea.Cmd {
+	exe, err := os.Executable()
+	if err != nil {
+		return func() tea.Msg { return installDoneMsg{err} }
+	}
+	script := `"$0" "$@"; s=$?; printf '\n\033[2mpress enter to return to dot\033[0m'; read _; exit $s`
+	c := exec.Command("sh", append([]string{"-c", script, exe}, m.inst.Args()...)...)
+	return tea.ExecProcess(c, func(err error) tea.Msg { return installDoneMsg{err} })
+}
 
 func (m *model) refresh() tea.Cmd {
 	r := m.repo
@@ -270,6 +320,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fc = max(0, len(t.entries)-1)
 		}
 		return m, nil
+	case pkgsMsg:
+		m.pkgs = msg
+		return m, nil
+	case installDoneMsg:
+		if msg.err != nil {
+			m.setMsg("", fmt.Errorf("install: %w", msg.err))
+		} else {
+			m.setMsg("install finished", nil)
+		}
+		m.busy = "scanning…"
+		return m, tea.Batch(m.refresh(), m.loadPkgs())
 	case fontsMsg:
 		m.fonts, m.busy = msg, ""
 		if m.ftc >= len(m.fonts) {
@@ -303,6 +364,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.nextConflict()
 	case tea.KeyMsg:
+		// Keys typed or repeated faster than they're read arrive as one event
+		// ("jjj"); replay them one by one so every screen sees single keys.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
+			var cmds []tea.Cmd
+			for _, r := range msg.Runes {
+				_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt})
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
@@ -325,6 +396,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case scrFonts:
 			return m.keyFonts(msg)
+		case scrInstall:
+			return m.keyInstall(msg)
 		}
 	}
 	return m, nil
@@ -362,8 +435,55 @@ func (m *model) keyTools(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.start("checking fonts…", m.loadFonts())
 	case "c":
 		return m.start("committing…", m.commitCmd())
+	case "i":
+		m.instOut = "back"
+		m.openInstall(InstallOpts{})
+		return m, m.loadPkgs()
 	case "r":
 		return m.start("scanning…", m.refresh())
+	}
+	return m, nil
+}
+
+func (m *model) keyInstall(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	tools := m.repo.Tools
+	switch k.String() {
+	case "q":
+		return m, tea.Quit
+	case "esc", "left", "h", "backspace":
+		if m.instOut == "quit" {
+			return m, tea.Quit
+		}
+		m.scr, m.msg = scrTools, ""
+	case "up", "k":
+		m.ic = max(0, m.ic-1)
+	case "down", "j":
+		m.ic = min(len(tools)-1, m.ic+1)
+	case " ", "x":
+		if m.ic < len(tools) {
+			n := tools[m.ic].Name
+			m.inst.Tools[n] = !m.inst.Tools[n]
+			if !m.inst.Tools[n] {
+				delete(m.inst.Tools, n)
+			}
+		}
+	case "a":
+		for _, t := range tools {
+			m.inst.Tools[t.Name] = true
+		}
+	case "n":
+		m.inst.Tools = Selection{}
+	case "b":
+		m.inst.NoBrew = !m.inst.NoBrew
+	case "f":
+		m.inst.NoFonts = !m.inst.NoFonts
+	case "enter":
+		if len(m.inst.Tools) == 0 {
+			m.setMsg("", errors.New("no tools ticked — space to tick one, a for all"))
+			return m, nil
+		}
+		m.msg = ""
+		return m, m.installCmd()
 	}
 	return m, nil
 }
@@ -518,7 +638,7 @@ func (m *model) View() string {
 	switch m.scr {
 	case scrTools:
 		body = m.viewTools()
-		help = keys("↑↓", "move", "enter", "files", "s", "sync tool", "S", "sync all", "f", "fonts", "c", "commit", "r", "rescan", "q", "quit")
+		help = keys("↑↓", "move", "enter", "files", "s", "sync tool", "S", "sync all", "i", "install", "f", "fonts", "c", "commit", "r", "rescan", "q", "quit")
 	case scrFiles:
 		body = m.viewFiles()
 		help = keys("enter", "diff", "s", "sync", "p", "repo→machine", "i", "machine→repo", "m", "merge", "a", "sync all", "esc", "back")
@@ -531,6 +651,9 @@ func (m *model) View() string {
 	case scrFonts:
 		body = m.viewFonts()
 		help = keys("i", "install", "I", "install missing", "a", "add to fonts.toml", "r", "recheck", "esc", "back")
+	case scrInstall:
+		body = m.viewInstall()
+		help = keys("space", "tick", "a", "all", "n", "none", "b", "packages", "f", "fonts", "enter", "install", "esc", "back")
 	}
 	b.WriteString(body)
 	b.WriteString("\n")
@@ -663,5 +786,55 @@ func (m *model) viewFonts() string {
 			lipgloss.NewStyle().Width(13).Render(state),
 			lipgloss.NewStyle().Width(36).Render(src), used)
 	}
+	return b.String()
+}
+
+func checkbox(on bool) string {
+	if on {
+		return stOK.Render("[x]")
+	}
+	return stDim.Render("[ ]")
+}
+
+func (m *model) viewInstall() string {
+	var b strings.Builder
+	b.WriteString(stTitle.Render("install") + stDim.Render("  missing packages, then fonts, then the repo's configs — for the ticked tools") + "\n\n")
+	missing := map[string][]string{}
+	for _, p := range m.pkgs {
+		if !p.Installed {
+			for _, t := range p.UsedBy {
+				missing[t] = append(missing[t], p.Name)
+			}
+		}
+	}
+	entries := map[string][]*Entry{}
+	for _, r := range m.rows {
+		entries[r.tool.Name] = r.entries
+	}
+	for i, t := range m.repo.Tools {
+		var sum []string
+		switch {
+		case m.pkgs == nil && (len(t.Brew)+len(t.Cask) > 0):
+			sum = append(sum, stDim.Render("checking packages…"))
+		case len(missing[t.Name]) > 0:
+			sum = append(sum, stBad.Render("✗ needs "+strings.Join(missing[t.Name], ", ")))
+		}
+		apply := 0
+		for _, e := range entries[t.Name] {
+			if e.Status == RepoOnly || e.Status == RepoAhead || e.Status == Diverged {
+				apply++
+			}
+		}
+		if apply > 0 {
+			sum = append(sum, stDown.Render(fmt.Sprintf("↓ %d config file(s) to apply", apply)))
+		}
+		if len(sum) == 0 {
+			sum = append(sum, stOK.Render("✓ nothing to do"))
+		}
+		name := lipgloss.NewStyle().Width(11).Bold(i == m.ic).Render(t.Name)
+		fmt.Fprintf(&b, "%s%s %s %s\n", cursor(i == m.ic), checkbox(m.inst.Tools[t.Name]), name, strings.Join(sum, "  "))
+	}
+	fmt.Fprintf(&b, "\n  %s packages (brew)   %s fonts   %s\n",
+		checkbox(!m.inst.NoBrew), checkbox(!m.inst.NoFonts), stDim.Render("configs: brought down from the repo, local changes kept"))
 	return b.String()
 }

@@ -1,17 +1,26 @@
 # CLAUDE.md
 
-Personal dotfiles (ghostty, herdr, vim) plus `dot`, a Go TUI that syncs them
+Personal dotfiles (ghostty, herdr, vim, zsh/oh-my-zsh/pure/oh-my-posh) plus `dot`, a Go TUI that syncs them
 between this repo and the current Mac. Public repo: github.com/gabalese/dotfiles.
 
 ## Layout
 
 - `tools.toml` — registry of supported tools: `paths` (relative to `$HOME`),
-  `ignore` globs, `fonts` regexes. Adding a tool should never need Go changes.
+  `ignore` globs, `fonts` regexes, `brew`/`cask` packages. Adding a tool should
+  never need Go changes.
 - `packages/<tool>/<path>` — repo copy of `$HOME/<path>`.
 - `fonts/fonts.toml` — fonts the configs use (`cask`, `files` → `fonts/files/<dir>/`, or `builtin`).
-- `Brewfile` — apps/tools only; fonts are deliberately *not* here.
+- Packages: `dot install` brew-installs each tool's `brew`/`cask` entries that
+  are missing. Present = in `brew list`, a same-named binary on `PATH`, or the
+  cask's `.app` (from `brew info --json=v2`) in `/Applications`. There is no
+  Brewfile; fonts are in `fonts.toml`, not in the package lists.
+- `dot install [tool…] [--skip a,b]` scopes packages, fonts (by the tools
+  whose configs use them) and configs to a `Selection` (nil = all). The TUI's
+  install screen (`i`, `dot install --pick`) re-execs `dot install <tools>` via
+  `tea.ExecProcess` so brew output and sudo prompts are visible.
 - `bootstrap.sh` — new machine: CLT, Homebrew, Go, clone, build, `dot install`.
-- Go (single `package main`): `config.go` (loading, ignore matching), `sync.go`
+- Go (single `package main`): `config.go` (loading, ignore matching), `packages.go` (brew
+  detection/install), `sync.go`
   (status, apply/import/merge), `fonts.go`, `tui.go` (Bubble Tea v1), `main.go` (CLI).
 
 ## How sync works (keep these invariants)
@@ -46,7 +55,8 @@ HOME=$SANDBOX/home DOTFILES_DIR=$SANDBOX/repo XDG_STATE_HOME=$SANDBOX/state ./bi
 
 Copy real configs into `$SANDBOX/home` and `tools.toml`/`fonts/` into
 `$SANDBOX/repo`. The TUI can be driven headlessly with `/usr/bin/expect`, using a
-fake `EDITOR` script to resolve conflicts.
+fake `EDITOR` script to resolve conflicts. Keys sent quickly arrive merged ("jjj");
+the TUI splits them, but pause ~0.2s between sends anyway.
 
 ## Ghostty specifics
 
@@ -71,14 +81,22 @@ shipped by the app (see `installed.json`) or runtime state (sockets, logs,
 sessions) — don't track it. The user-made `control-panel` theme/layout/mod there
 is untracked for now.
 
+## Zsh
+
+`zsh` tracks the startup files; `oh-my-zsh` tracks only `~/.oh-my-zsh/custom`
+(the framework is installed by `bootstrap.sh`, not tracked). The prompt is
+`pure`, which has no config file: its zstyles and `prompt pure` live in
+`~/.config/zsh/pure.zsh` (tool `pure`), sourced from `.zshrc`. `oh-my-posh` is
+installed but its init line in `.zshrc` is commented out, and
+`~/.config/oh-my-posh` is registered for when a theme exists. Keep
+the `added by SpookiUI` ssh alias and Docker Desktop block in `.zshrc`/`.zprofile`.
+
 ## Open items
 
 - Third-party files in `packages/ghostty` (SpookiUI shaders, `cursor_warp.glsl`,
   iglass and ayu themes) have no license headers; consider excluding them and
   regenerating via `iglass install` / SpookiUI in `bootstrap.sh`.
 - No vim config exists yet on the main machine.
-- On this Mac, Ghostty and Herdr.app weren't installed via Homebrew, so use
-  `dot install --no-brew` here.
 
 ## Conventions
 

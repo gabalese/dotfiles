@@ -21,5 +21,10 @@ command -v go >/dev/null 2>&1 || brew install go
 cd "$DEST" && go build -o bin/dot .
 mkdir -p "$HOME/.local/bin" && ln -sf "$DEST/bin/dot" "$HOME/.local/bin/dot"
 
+if [ ! -d "$HOME/.oh-my-zsh" ]; then
+  # KEEP_ZSHRC: dot install brings the real .zshrc down from the repo
+  RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+fi
+
 "$DEST/bin/dot" install
 echo; echo "Done. Run 'dot' (add ~/.local/bin to PATH) to review and merge anything left."
