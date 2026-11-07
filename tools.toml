@@ -1,0 +1,33 @@
+# Supported tools. Each tool's files live in packages/<tool>/ at the same
+# path they have relative to $HOME. Add a tool by adding a section here.
+#
+#   paths   files or directories (relative to $HOME) to track
+#   ignore  globs matched against the file name or its relative path;
+#           "dir/**" excludes a whole subtree
+#   fonts   regexes; the first group is a font family the config uses
+
+# never tracked for any tool
+ignore = [".DS_Store", "*.sock", "*.log", "*.lock", "*.dot-tmp", "*.swp", "*.swo"]
+
+[tools.ghostty]
+description = "Ghostty terminal"
+# Only ~/.config/ghostty: the macOS config.ghostty in Application Support
+# would load on top of it, so keep everything in one file.
+paths = [".config/ghostty"]
+ignore = ["*.bak"]
+fonts = ['^\s*font-family(?:-bold|-italic|-bold-italic)?\s*=\s*"?([^"#]*?)"?\s*$']
+
+[tools.herdr]
+description = "herdr + Herdr app"
+paths = [
+  ".config/herdr/config.toml",
+  ".config/herdr-app/settings.json",
+  ".config/herdr-app/keys.json",
+]
+fonts = ['"font_family"\s*:\s*"([^"]+)"']
+
+[tools.vim]
+description = "Vim / Neovim"
+paths = [".vimrc", ".gvimrc", ".vim", ".config/nvim"]
+ignore = [".netrwhist", "undo/**", "swap/**", "backup/**", "view/**", "plugged/**", "bundle/**", "pack/**", "lazy-lock.json"]
+fonts = ['^\s*set\s+guifont=([^:,]+)', 'guifont\s*=\s*"([^:,"]+)']

@@ -1,0 +1,14 @@
+# Fonts used by the configs in packages/. The TUI's fonts screen (f) shows
+# any font a config references that is missing from this list, and `a` adds it.
+#
+#   cask    = Homebrew cask that installs it
+#   files   = directory under fonts/files/ with vendored font files
+#   builtin = true when the app ships it (nothing to install)
+
+[[font]]
+family = "CommitMono Nerd Font Mono"   # ghostty font-family
+cask = "font-commit-mono-nerd-font"
+
+[[font]]
+family = "JetBrains Mono"              # ghostty fallback; embedded in Ghostty
+builtin = true
