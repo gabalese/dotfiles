@@ -12,3 +12,7 @@ cask = "font-commit-mono-nerd-font"
 [[font]]
 family = "JetBrains Mono"              # ghostty fallback; embedded in Ghostty
 builtin = true
+
+[[font]]
+family = "IosevkaTerm Nerd Font"       # sublime-text font_face
+cask = "font-iosevka-term-nerd-font"

@@ -81,6 +81,23 @@ shipped by the app (see `installed.json`) or runtime state (sockets, logs,
 sessions) — don't track it. The user-made `control-panel` theme/layout/mod there
 is untracked for now.
 
+## Corgi
+
+`corgi` tracks `~/.local/state/corgi/{settings,viewer}.json` (shell, model, theme,
+keys). It keeps them under the state dir, next to per-machine data that must stay
+untracked: `accounts.json`, `workspaces.json` (absolute paths), `memory/`,
+`recovery/`, `crash/`, `limit-history/`. Corgi installs itself into
+`~/.local/share/corgi`; there is no brew package.
+
+## Sublime Text
+
+`sublime-text` tracks `Packages/User` (settings, the `Adaptive.sublime-theme`
+override) and the hand-made `Installed Packages/Quiet Writer.sublime-package`
+colour scheme, both under `~/Library/Application Support/Sublime Text`. The
+package is a zip: it syncs as a whole file and cannot be merged. Package Control
+and anything it installs are not tracked. Sublime does not load `.sublime-package`
+files placed directly in `Packages/`, so don't track copies there.
+
 ## Zsh
 
 `zsh` tracks the startup files; `oh-my-zsh` tracks only `~/.oh-my-zsh/custom`
@@ -96,10 +113,9 @@ the `added by SpookiUI` ssh alias and Docker Desktop block in `.zshrc`/`.zprofil
 - Third-party files in `packages/ghostty` (SpookiUI shaders, `cursor_warp.glsl`,
   iglass and ayu themes) have no license headers; consider excluding them and
   regenerating via `iglass install` / SpookiUI in `bootstrap.sh`.
-- No vim config exists yet on the main machine.
 
 ## Conventions
 
 - This is a public repo: scan for secrets/emails/absolute home paths before committing.
-- Commit with the TUI's `c` (message "Sync settings from <host>") for config
+- Commit with the TUI's `c` (message "Sync settings" — no machine name, the repo is public) for config
   changes; write normal messages for code changes.

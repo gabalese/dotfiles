@@ -1,0 +1,9 @@
+{
+  "shell": "/bin/bash",
+  "inference": "claude",
+  "inference_selection": {
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "account": ""
+  }
+}

@@ -1,0 +1,10 @@
+{
+	"ignored_packages":
+	[
+	],
+	"theme": "Adaptive.sublime-theme",
+	"color_scheme": "Quiet Writer Dark.sublime-color-scheme",
+	"font_face": "IosevkaTerm Nerd Font",
+	"font_size": 17,
+	"themed_title_bar": true,
+}

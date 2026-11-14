@@ -272,12 +272,10 @@ func (m *model) commitCmd() tea.Cmd {
 		if gitDirty(root) == 0 {
 			return doneMsg{text: "nothing to commit"}
 		}
-		host, _ := os.Hostname()
-		host = strings.TrimSuffix(host, ".local")
 		if out, err := exec.Command("git", "-C", root, "add", "-A").CombinedOutput(); err != nil {
 			return doneMsg{err: fmt.Errorf("git add: %s", strings.TrimSpace(string(out)))}
 		}
-		out, err := exec.Command("git", "-C", root, "commit", "-q", "-m", "Sync settings from "+host).CombinedOutput()
+		out, err := exec.Command("git", "-C", root, "commit", "-q", "-m", "Sync settings").CombinedOutput()
 		if err != nil {
 			return doneMsg{err: fmt.Errorf("git commit: %s", strings.TrimSpace(string(out)))}
 		}

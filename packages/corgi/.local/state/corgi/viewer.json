@@ -1,0 +1,23 @@
+{
+  "agents": "workspace",
+  "agent_sort": "activity",
+  "sidebar_width": 28,
+  "sidebar_split": null,
+  "agent_scroll": {
+    "workspace": 1,
+    "offset": 0
+  },
+  "preset": "corgi",
+  "prefix": "ctrl_a",
+  "keys": {},
+  "onboarding_complete": true,
+  "language": "en",
+  "resources": {
+    "enabled": true
+  },
+  "corgi_intensity": 50,
+  "theme": "corgi",
+  "worktree_folder": "$PROJECT_ROOT/.worktrees/$NAME",
+  "review_width": 80,
+  "review_tree_rows": 9
+}
