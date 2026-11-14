@@ -132,7 +132,7 @@ func runTUI(r *Repo) error {
 	return err
 }
 
-// runTUIInstall opens the TUI straight on the install picker (dot install --pick).
+// runTUIInstall opens the TUI straight on the install picker (dotty install --pick).
 func runTUIInstall(r *Repo, o InstallOpts) error {
 	m := newModel(r)
 	m.instOut = "quit"
@@ -168,14 +168,14 @@ func (m *model) loadPkgs() tea.Cmd {
 	return func() tea.Msg { return pkgsMsg(r.Packages()) }
 }
 
-// installCmd runs `dot install <ticked tools>` in the foreground so brew's
+// installCmd runs `dotty install <ticked tools>` in the foreground so brew's
 // output (and any sudo prompt) is visible, then waits for enter.
 func (m *model) installCmd() tea.Cmd {
 	exe, err := os.Executable()
 	if err != nil {
 		return func() tea.Msg { return installDoneMsg{err} }
 	}
-	script := `"$0" "$@"; s=$?; printf '\n\033[2mpress enter to return to dot\033[0m'; read _; exit $s`
+	script := `"$0" "$@"; s=$?; printf '\n\033[2mpress enter to return to dotty\033[0m'; read _; exit $s`
 	c := exec.Command("sh", append([]string{"-c", script, exe}, m.inst.Args()...)...)
 	return tea.ExecProcess(c, func(err error) tea.Msg { return installDoneMsg{err} })
 }
@@ -862,7 +862,7 @@ func lastLine(out string, err error) string {
 
 func (m *model) View() string {
 	var b strings.Builder
-	head := stBadge.Render("dot") + stDim.Render("  "+m.repo.Tilde(m.repo.Root))
+	head := stBadge.Render("dotty") + stDim.Render("  "+m.repo.Tilde(m.repo.Root))
 	if m.dirty > 0 {
 		head += stUp.Render("  ● "+plural(m.dirty, "uncommitted change")) + stDim.Render(" (c commits)")
 	}
@@ -931,9 +931,9 @@ func (m *model) keys(pairs ...string) string {
 
 func (m *model) viewBackups() string {
 	var b strings.Builder
-	b.WriteString(stTitle.Render("backups") + stDim.Render("  files dot replaced on this machine, newest first") + "\n\n")
+	b.WriteString(stTitle.Render("backups") + stDim.Render("  files dotty replaced on this machine, newest first") + "\n\n")
 	if len(m.backups) == 0 {
-		return b.String() + stDim.Render("  none yet — dot saves a file here before overwriting it") + "\n"
+		return b.String() + stDim.Render("  none yet — dotty saves a file here before overwriting it") + "\n"
 	}
 	avail := max(3, (m.h-10)/2)
 	lo := max(0, min(m.bc-avail+1, len(m.backups)-avail))

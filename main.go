@@ -1,14 +1,14 @@
-// dot — manage dotfiles for a set of supported tools.
+// dotty — manage dotfiles for a set of supported tools.
 //
-//	dot            interactive TUI
-//	dot status     print what differs between the repo and this machine
-//	dot sync       apply/import/merge everything that does not conflict
-//	dot merge      like sync, but settles conflicts itself (one side wins)
-//	dot apply      overwrite this machine's files with the repo's
-//	dot restore    bring back files a previous run replaced on this machine
-//	dot install    new machine: missing packages, fonts, then apply the repo
-//	dot packages   list Homebrew packages the tools need
-//	dot fonts      list fonts used by the configs
+//	dotty            interactive TUI
+//	dotty status     print what differs between the repo and this machine
+//	dotty sync       apply/import/merge everything that does not conflict
+//	dotty merge      like sync, but settles conflicts itself (one side wins)
+//	dotty apply      overwrite this machine's files with the repo's
+//	dotty restore    bring back files a previous run replaced on this machine
+//	dotty install    new machine: missing packages, fonts, then apply the repo
+//	dotty packages   list Homebrew packages the tools need
+//	dotty fonts      list fonts used by the configs
 package main
 
 import (
@@ -23,7 +23,7 @@ import (
 func main() {
 	repo, err := LoadRepo()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "dot:", err)
+		fmt.Fprintln(os.Stderr, "dotty:", err)
 		os.Exit(1)
 	}
 	args := os.Args[1:]
@@ -53,44 +53,44 @@ func main() {
 	case "help", "-h", "--help":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "dot: unknown command %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "dotty: unknown command %q\n\n", cmd)
 		usage()
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "dot:", err)
+		fmt.Fprintln(os.Stderr, "dotty:", err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Print(`dot — dotfiles for ghostty, herdr, vim and friends
+	fmt.Print(`dotty — dotfiles for ghostty, herdr, vim and friends
 
-  dot              open the TUI
-  dot status       show what differs between the repo and this machine
-  dot sync         apply/import/merge everything that has no conflicts
-  dot merge [--prefer machine|repo]
-                   sync everything, conflicts included: conflicting lines are
-                   merged word by word, and where both sides changed the same
-                   words the preferred side wins (default: machine)
-  dot apply [tool…]
-                   make this machine match the repo: every tracked file that
-                   differs is overwritten with the repo's copy (files that are
-                   only on this machine are left alone)
-  dot restore      list the backups of replaced machine files, by timestamp
-  dot restore <timestamp>|latest
-                   put the files of that backup back on this machine
-  dot install [tool…]
-                   install missing packages and fonts, apply the repo — for the
-                   named tools, or all of them (--skip a,b  --no-brew  --no-fonts)
-  dot install --pick
-                   choose the tools in the TUI
-  dot packages     list Homebrew packages the tools need, and which are missing
-  dot fonts        list fonts referenced by the configs
+  dotty              open the TUI
+  dotty status       show what differs between the repo and this machine
+  dotty sync         apply/import/merge everything that has no conflicts
+  dotty merge [--prefer machine|repo]
+                     sync everything, conflicts included: conflicting lines are
+                     merged word by word, and where both sides changed the same
+                     words the preferred side wins (default: machine)
+  dotty apply [tool…]
+                     make this machine match the repo: every tracked file that
+                     differs is overwritten with the repo's copy (files that are
+                     only on this machine are left alone)
+  dotty restore      list the backups of replaced machine files, by timestamp
+  dotty restore <timestamp>|latest
+                     put the files of that backup back on this machine
+  dotty install [tool…]
+                     install missing packages and fonts, apply the repo — for the
+                     named tools, or all of them (--skip a,b  --no-brew  --no-fonts)
+  dotty install --pick
+                     choose the tools in the TUI
+  dotty packages     list Homebrew packages the tools need, and which are missing
+  dotty fonts        list fonts referenced by the configs
 
 Supported tools and their packages are declared in tools.toml; fonts in fonts/fonts.toml.
-Before overwriting a file on this machine, dot saves it to
-~/.local/state/dotfiles/backup/<timestamp>/ — dot restore brings it back.
+Before overwriting a file on this machine, dotty saves it to
+~/.local/state/dotfiles/backup/<timestamp>/ — dotty restore brings it back.
 `)
 }
 
@@ -106,7 +106,7 @@ func cliStatus(r *Repo) {
 	for _, t := range r.Tools {
 		fmt.Printf("%s\n", stTitle.Render(t.Name))
 		for _, p := range missing[t.Name] {
-			fmt.Printf("  %s %s %s\n", stBad.Width(16).Render("✗ not installed"), p.Kind()+" "+p.Name, stDim.Render("— dot install"))
+			fmt.Printf("  %s %s %s\n", stBad.Width(16).Render("✗ not installed"), p.Kind()+" "+p.Name, stDim.Render("— dotty install"))
 		}
 		entries := r.Scan(t)
 		if len(entries) == 0 {
@@ -149,7 +149,7 @@ func cliSync(r *Repo, install bool, sel Selection) {
 		fmt.Printf("  %s ~/%s %s\n", stUp.Render("↑"), k, stDim.Render("only on this machine — import it from the TUI if wanted"))
 	}
 	for _, c := range conflicts {
-		fmt.Printf("  %s ~/%s %s\n", stBad.Render("⇅"), c, stDim.Render("needs a manual merge — run dot"))
+		fmt.Printf("  %s ~/%s %s\n", stBad.Render("⇅"), c, stDim.Render("needs a manual merge — run dotty"))
 	}
 	if len(conflicts) == 0 && len(kept) == 0 {
 		fmt.Println(stOK.Render("everything in sync"))
@@ -223,7 +223,7 @@ func cliMerge(r *Repo, args []string) error {
 		fmt.Println(stDim.Render(fmt.Sprintf("%d file(s) had conflicts settled for the %s — %s", overridden, prefer, lost)))
 	}
 	if _, err := os.Stat(r.BackupDir()); err == nil {
-		fmt.Println(stDim.Render("replaced files saved — undo with: dot restore " + r.stamp))
+		fmt.Println(stDim.Render("replaced files saved — undo with: dotty restore " + r.stamp))
 	}
 	switch {
 	case failed > 0:
@@ -273,7 +273,7 @@ func cliApply(r *Repo, args []string) error {
 		fmt.Println(stDim.Render(fmt.Sprintf("%d file(s) only on this machine left alone", kept)))
 	}
 	if _, err := os.Stat(r.BackupDir()); err == nil {
-		fmt.Println(stDim.Render("replaced files saved — undo with: dot restore " + r.stamp))
+		fmt.Println(stDim.Render("replaced files saved — undo with: dotty restore " + r.stamp))
 	}
 	switch {
 	case failed > 0:
@@ -300,7 +300,7 @@ func cliRestore(r *Repo, args []string) error {
 				fmt.Printf("  ~/%s\n", e.Rel)
 			}
 		}
-		fmt.Println(stDim.Render("restore one with: dot restore <timestamp>   (or: latest)"))
+		fmt.Println(stDim.Render("restore one with: dotty restore <timestamp>   (or: latest)"))
 		return nil
 	}
 	if len(args) > 1 {
@@ -314,7 +314,7 @@ func cliRestore(r *Repo, args []string) error {
 		stamp = stamps[len(stamps)-1]
 	}
 	if !slices.Contains(stamps, stamp) {
-		return fmt.Errorf("no backup %q — run dot restore to list them", stamp)
+		return fmt.Errorf("no backup %q — run dotty restore to list them", stamp)
 	}
 	failed := 0
 	for _, e := range r.BackupFiles(stamp) {
@@ -330,7 +330,7 @@ func cliRestore(r *Repo, args []string) error {
 		}
 	}
 	if _, err := os.Stat(r.BackupDir()); err == nil {
-		fmt.Println(stDim.Render("replaced files saved — undo with: dot restore " + r.stamp))
+		fmt.Println(stDim.Render("replaced files saved — undo with: dotty restore " + r.stamp))
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d file(s) could not be restored", failed)
@@ -395,7 +395,7 @@ func cliFonts(r *Repo) {
 	}
 }
 
-// InstallOpts says what `dot install` does, and for which tools.
+// InstallOpts says what `dotty install` does, and for which tools.
 type InstallOpts struct {
 	Tools   Selection
 	NoBrew  bool
@@ -403,7 +403,7 @@ type InstallOpts struct {
 	Pulled  []string // "zsh (required by pure)": tools added through `requires`
 }
 
-// Args renders the options back into `dot install` arguments.
+// Args renders the options back into `dotty install` arguments.
 func (o InstallOpts) Args() []string {
 	args := []string{"install"}
 	if o.NoBrew {

@@ -21,7 +21,7 @@ type Tool struct {
 	FontPatterns []string `toml:"fonts"`    // regexes whose first group is a font family name
 	Brew         []string `toml:"brew"`     // Homebrew formulae the tool needs ("user/tap/name" auto-taps)
 	Cask         []string `toml:"cask"`     // Homebrew casks the tool needs
-	Requires     []string `toml:"requires"` // other tools `dot install` brings along with this one
+	Requires     []string `toml:"requires"` // other tools `dotty install` brings along with this one
 }
 
 // Font is one entry of fonts/fonts.toml.
@@ -71,7 +71,7 @@ func findRoot() (string, error) {
 		cands = append(cands, wd)
 	}
 	home, _ := os.UserHomeDir()
-	cands = append(cands, filepath.Join(home, "Projects", "dotfiles"), filepath.Join(home, ".dotfiles"))
+	cands = append(cands, filepath.Join(home, "Projects", "dotty"), filepath.Join(home, "Projects", "dotfiles"), filepath.Join(home, ".dotfiles"))
 	for _, c := range cands {
 		if _, err := os.Stat(filepath.Join(c, "tools.toml")); err == nil {
 			return c, nil

@@ -1,25 +1,25 @@
 # CLAUDE.md
 
-Personal dotfiles (ghostty, herdr, vim, zsh/oh-my-zsh/pure/oh-my-posh) plus `dot`, a Go TUI that syncs them
-between this repo and the current Mac. Public repo: github.com/gabalese/dotfiles.
+Personal dotfiles (ghostty, herdr, vim, zsh/oh-my-zsh/pure/oh-my-posh) plus `dotty`, a Go TUI that syncs them
+between this repo and the current Mac. Public repo: github.com/gabalese/dotty.
 
 ## Layout
 
 - `tools.toml` — registry of supported tools: `paths` (relative to `$HOME`),
   `ignore` globs, `fonts` regexes, `brew`/`cask` packages, `requires` (other
-  tools `dot install <tool>` brings along; `--skip` still wins). Adding a tool should
+  tools `dotty install <tool>` brings along; `--skip` still wins). Adding a tool should
   never need Go changes.
 - `packages/<tool>/<path>` — repo copy of `$HOME/<path>`.
 - `fonts/fonts.toml` — fonts the configs use (`cask`, `files` → `fonts/files/<dir>/`, or `builtin`).
-- Packages: `dot install` brew-installs each tool's `brew`/`cask` entries that
+- Packages: `dotty install` brew-installs each tool's `brew`/`cask` entries that
   are missing. Present = in `brew list`, a same-named binary on `PATH`, or the
   cask's `.app` (from `brew info --json=v2`) in `/Applications`. There is no
   Brewfile; fonts are in `fonts.toml`, not in the package lists.
-- `dot install [tool…] [--skip a,b]` scopes packages, fonts (by the tools
+- `dotty install [tool…] [--skip a,b]` scopes packages, fonts (by the tools
   whose configs use them) and configs to a `Selection` (nil = all). The TUI's
-  install screen (`i`, `dot install --pick`) re-execs `dot install <tools>` via
+  install screen (`i`, `dotty install --pick`) re-execs `dotty install <tools>` via
   `tea.ExecProcess` so brew output and sudo prompts are visible.
-- `bootstrap.sh` — new machine: CLT, Homebrew, Go, clone, build, `dot install`.
+- `bootstrap.sh` — new machine: CLT, Homebrew, Go, clone, build, `dotty install`.
 - Go (single `package main`): `config.go` (loading, ignore matching), `packages.go` (brew
   detection/install), `sync.go`
   (status, apply/import/merge), `fonts.go`, `tui.go` (Bubble Tea v1), `main.go` (CLI).
@@ -38,37 +38,37 @@ between this repo and the current Mac. Public repo: github.com/gabalese/dotfiles
   `tea.ExecProcess`; result is rejected if markers remain.
 - Anything overwritten on the machine is first copied to
   `~/.local/state/dotfiles/backup/<timestamp>/`.
-- **Magic merge** (`dot merge`, TUI `w`/`W`) is a sync that never leaves a
+- **Magic merge** (`dotty merge`, TUI `w`/`W`) is a sync that never leaves a
   conflict (`ForceMerge`/`magicMerge` in `sync.go`): each conflicting hunk
   (parsed from `git merge-file --zdiff3` with 40-char markers) is re-merged word
   by word — tokens written one per line and fed to `git merge-file` again — so
   edits to different words of the same lines both survive. Hunks that still
   conflict are taken from `--prefer machine|repo` (default machine; TUI `o`).
   Binary files, and JSON/TOML whose merge would stop parsing, are taken whole
-  from that side. Plain sync (`dot sync`, `s`) and `dot install` still leave
+  from that side. Plain sync (`dotty sync`, `s`) and `dotty install` still leave
   conflicts for a human.
-- **`dot apply [tool…]`** (TUI `p`/`P` on the tool list, with a y/n confirm)
+- **`dotty apply [tool…]`** (TUI `p`/`P` on the tool list, with a y/n confirm)
   overwrites machine files with the repo's; machine-only files are left alone.
-  **`dot restore`** (TUI `b`) lists backups; `dot restore <timestamp>|latest`
+  **`dotty restore`** (TUI `b`) lists backups; `dotty restore <timestamp>|latest`
   puts one back, backing up what it replaces. It does not touch the base
   snapshot, so restored files show as "machine newer" — a later sync would
   import them into the repo.
 - The TUI calls `Repo.Restamp()` before each operation so one session's backups
   don't overwrite each other.
-- `dot install` never imports machine-only files; it only brings the repo down
+- `dotty install` never imports machine-only files; it only brings the repo down
   and clean-merges. Conflicts are left for the TUI.
 
 ## Build & test
 
 ```sh
-go vet ./... && go build -o bin/dot .     # bin/ is gitignored; ~/.local/bin/dot links to it
+go vet ./... && go build -o bin/dotty .     # bin/ is gitignored; ~/.local/bin/dotty links to it
 ```
 
 There are no unit tests yet. Test against a sandbox — **never against the real
 `$HOME`** — by overriding all three locations:
 
 ```sh
-HOME=$SANDBOX/home DOTFILES_DIR=$SANDBOX/repo XDG_STATE_HOME=$SANDBOX/state ./bin/dot status
+HOME=$SANDBOX/home DOTFILES_DIR=$SANDBOX/repo XDG_STATE_HOME=$SANDBOX/state ./bin/dotty status
 ```
 
 Copy real configs into `$SANDBOX/home` and `tools.toml`/`fonts/` into
