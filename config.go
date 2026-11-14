@@ -97,8 +97,8 @@ func LoadRepo() (*Repo, error) {
 		Root:     root,
 		Home:     home,
 		StateDir: filepath.Join(state, "dotfiles"),
-		stamp:    time.Now().Format("20060102-150405"),
 	}
+	r.Restamp()
 
 	var tf struct {
 		Ignore []string         `toml:"ignore"`
@@ -172,3 +172,9 @@ func (r *Repo) Tool(name string) *Tool {
 	}
 	return nil
 }
+
+const stampLayout = "20060102-150405"
+
+// Restamp starts a new backup directory. The TUI calls it before each
+// operation so that one session does not overwrite its own earlier backups.
+func (r *Repo) Restamp() { r.stamp = time.Now().Format(stampLayout) }

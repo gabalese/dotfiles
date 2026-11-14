@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,6 +23,7 @@ const (
 	scrDiff
 	scrFonts
 	scrInstall
+	scrBackups
 )
 
 var (
@@ -32,6 +35,7 @@ var (
 	stUp     = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	stBad    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	stKey    = lipgloss.NewStyle().Bold(true)
+	stBadge  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12")).Padding(0, 1)
 )
 
 func statusStyle(s Status) lipgloss.Style {
@@ -76,6 +80,11 @@ type model struct {
 	w, h     int
 	dirty    int
 	conflict []*Entry // queue of merges waiting for the editor
+	prefer   Side     // who wins what a magic merge cannot settle
+	confirm  *confirm // a y/n question waiting for an answer
+	backups  []backupRow
+	bc       int
+	spin     spinner.Model
 
 	// install screen
 	inst    InstallOpts // Tools is always non-nil here: the ticked tools
@@ -86,8 +95,21 @@ type model struct {
 
 // ── messages ───────────────────────────────────────────────────────────────
 type refreshMsg struct {
-	rows  []toolRow
-	dirty int
+	rows    []toolRow
+	dirty   int
+	backups []backupRow
+}
+
+// backupRow is one timestamped set of files that were replaced on this machine.
+type backupRow struct {
+	stamp string
+	files []*Entry
+}
+
+// confirm is a question asked before something that overwrites many files.
+type confirm struct {
+	text string
+	yes  func() (tea.Model, tea.Cmd)
 }
 type fontsMsg []*FontRow
 type pkgsMsg []*Pkg
@@ -105,24 +127,29 @@ type editorDoneMsg struct {
 }
 
 func runTUI(r *Repo) error {
-	m := &model{repo: r, busy: "scanning…"}
+	m := newModel(r)
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
 }
 
 // runTUIInstall opens the TUI straight on the install picker (dot install --pick).
 func runTUIInstall(r *Repo, o InstallOpts) error {
-	m := &model{repo: r, busy: "scanning…", instOut: "quit"}
+	m := newModel(r)
+	m.instOut = "quit"
 	m.openInstall(o)
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
 }
 
+func newModel(r *Repo) *model {
+	return &model{repo: r, busy: "scanning…", spin: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(stCursor))}
+}
+
 func (m *model) Init() tea.Cmd {
 	if m.scr == scrInstall {
-		return tea.Batch(m.refresh(), m.loadPkgs())
+		return tea.Batch(m.refresh(), m.loadPkgs(), m.spin.Tick)
 	}
-	return m.refresh()
+	return tea.Batch(m.refresh(), m.spin.Tick)
 }
 
 // openInstall shows the install picker; a nil o.Tools ticks every tool.
@@ -160,7 +187,11 @@ func (m *model) refresh() tea.Cmd {
 		for _, t := range r.Tools {
 			rows = append(rows, toolRow{tool: t, entries: r.Scan(t)})
 		}
-		return refreshMsg{rows: rows, dirty: gitDirty(r.Root)}
+		var backups []backupRow
+		for _, s := range r.Backups() {
+			backups = append([]backupRow{{s, r.BackupFiles(s)}}, backups...) // newest first
+		}
+		return refreshMsg{rows: rows, dirty: gitDirty(r.Root), backups: backups}
 	}
 }
 
@@ -210,6 +241,148 @@ func (m *model) syncCmd(entries []*Entry) tea.Cmd {
 	}
 }
 
+func plural(n int, what string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", what)
+	}
+	return fmt.Sprintf("%d %ss", n, what)
+}
+
+// magicCmd syncs entries and settles every conflict: word by word where
+// possible, otherwise the preferred side wins.
+func (m *model) magicCmd(entries []*Entry) tea.Cmd {
+	r, prefer := m.repo, m.prefer
+	return func() tea.Msg {
+		var errs []string
+		var n, magic, taken, whole int
+		for _, e := range entries {
+			f, err := r.ForceMerge(e, prefer)
+			if err != nil {
+				errs = append(errs, e.Rel+": "+err.Error())
+				continue
+			}
+			n++
+			magic, taken = magic+f.Magic, taken+f.Taken
+			if f.Whole != "" {
+				whole++
+			}
+		}
+		text := "synced " + plural(n, "file")
+		if magic > 0 {
+			text += " · " + plural(magic, "conflict") + " merged word by word"
+		}
+		if taken > 0 {
+			text += fmt.Sprintf(" · %s taken from the %s", plural(taken, "conflict"), prefer)
+		}
+		if whole > 0 {
+			text += fmt.Sprintf(" · %s taken whole from the %s", plural(whole, "file"), prefer)
+		}
+		d := doneMsg{text: text}
+		if len(errs) > 0 {
+			d.err = errors.New(strings.Join(errs, "; "))
+		}
+		return d
+	}
+}
+
+// toApply lists the entries whose machine copy differs from the repo's.
+func toApply(entries []*Entry) []*Entry {
+	var out []*Entry
+	for _, e := range entries {
+		if e.Status != Synced && e.Status != LocalOnly {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// askApply confirms, then overwrites the machine's copies with the repo's.
+func (m *model) askApply(what string, entries []*Entry) (tea.Model, tea.Cmd) {
+	entries = toApply(entries)
+	if len(entries) == 0 {
+		m.setMsg("this machine already has the repo's "+what, nil)
+		return m, nil
+	}
+	r := m.repo
+	m.confirm = &confirm{
+		text: fmt.Sprintf("overwrite %s on this machine with the repo's copy?", plural(len(entries), "file")),
+		yes: func() (tea.Model, tea.Cmd) {
+			return m.start("applying the repo…", func() tea.Msg {
+				var errs []string
+				for _, e := range entries {
+					if err := r.Apply(e); err != nil {
+						errs = append(errs, e.Rel+": "+err.Error())
+					}
+				}
+				d := doneMsg{text: fmt.Sprintf("applied %s — b lists the backup to undo it", plural(len(entries)-len(errs), "file"))}
+				if len(errs) > 0 {
+					d.err = errors.New(strings.Join(errs, "; "))
+				}
+				return d
+			})
+		},
+	}
+	return m, nil
+}
+
+// askRestore confirms, then puts a backup's files back on this machine.
+func (m *model) askRestore(b backupRow) (tea.Model, tea.Cmd) {
+	r := m.repo
+	m.confirm = &confirm{
+		text: fmt.Sprintf("put the %s from %s back on this machine?", plural(len(b.files), "file"), stampTime(b.stamp)),
+		yes: func() (tea.Model, tea.Cmd) {
+			return m.start("restoring…", func() tea.Msg {
+				var errs []string
+				n := 0
+				for _, e := range b.files {
+					same, err := r.Restore(b.stamp, e)
+					switch {
+					case err != nil:
+						errs = append(errs, e.Rel+": "+err.Error())
+					case !same:
+						n++
+					}
+				}
+				d := doneMsg{text: "restored " + plural(n, "file")}
+				if n == 0 {
+					d.text = "nothing to restore — this machine already has those versions"
+				}
+				if len(errs) > 0 {
+					d.err = errors.New(strings.Join(errs, "; "))
+				}
+				return d
+			})
+		},
+	}
+	return m, nil
+}
+
+// stampTime renders a backup timestamp for people.
+func stampTime(stamp string) string {
+	t, err := time.ParseInLocation(stampLayout, stamp, time.Local)
+	if err != nil {
+		return stamp
+	}
+	return t.Format("Mon 2 Jan 2006 15:04:05")
+}
+
+func stampAge(stamp string) string {
+	t, err := time.ParseInLocation(stampLayout, stamp, time.Local)
+	if err != nil {
+		return ""
+	}
+	switch d := time.Since(t); {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return plural(int(d.Minutes()), "minute") + " ago"
+	case d < 48*time.Hour:
+		return plural(int(d.Hours()), "hour") + " ago"
+	default:
+		return plural(int(d.Hours()/24), "day") + " ago"
+	}
+}
+
 func (m *model) oneCmd(label string, f func() error) tea.Cmd {
 	return func() tea.Msg {
 		if err := f(); err != nil {
@@ -236,6 +409,7 @@ func editorArgs(path string) []string {
 
 // openMerge merges an entry; clean merges are saved, conflicts open $EDITOR.
 func (m *model) openMerge(e *Entry) tea.Cmd {
+	m.repo.Restamp()
 	merged, clean, err := m.repo.Merge(e)
 	if err != nil {
 		return func() tea.Msg { return doneMsg{err: fmt.Errorf("%s: %w", e.Rel, err)} }
@@ -313,11 +487,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.Width, m.vp.Height = msg.Width, max(1, msg.Height-4)
 		return m, nil
 	case refreshMsg:
-		m.rows, m.dirty, m.busy = msg.rows, msg.dirty, ""
+		m.rows, m.dirty, m.busy, m.backups = msg.rows, msg.dirty, "", msg.backups
+		m.bc = max(0, min(m.bc, len(m.backups)-1))
 		if t := m.curTool(); t != nil && m.fc >= len(t.entries) {
 			m.fc = max(0, len(t.entries)-1)
 		}
 		return m, nil
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	case pkgsMsg:
 		m.pkgs = msg
 		return m, nil
@@ -378,6 +557,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.busy != "" {
 			return m, nil
 		}
+		if c := m.confirm; c != nil {
+			m.confirm = nil
+			switch msg.String() {
+			case "y", "Y", "enter":
+				return c.yes()
+			}
+			m.setMsg("cancelled", nil)
+			return m, nil
+		}
 		switch m.scr {
 		case scrTools:
 			return m.keyTools(msg)
@@ -396,6 +584,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.keyFonts(msg)
 		case scrInstall:
 			return m.keyInstall(msg)
+		case scrBackups:
+			return m.keyBackups(msg)
 		}
 	}
 	return m, nil
@@ -403,6 +593,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) start(label string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	m.busy, m.msg = label, ""
+	m.repo.Restamp()
 	return m, cmd
 }
 
@@ -428,6 +619,31 @@ func (m *model) keyTools(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			all = append(all, t.pending()...)
 		}
 		return m.start("syncing everything…", m.syncCmd(all))
+	case "w":
+		if t := m.curTool(); t != nil {
+			return m.start("magic-merging "+t.tool.Name+"…", m.magicCmd(t.pending()))
+		}
+	case "W":
+		var all []*Entry
+		for _, t := range m.rows {
+			all = append(all, t.pending()...)
+		}
+		return m.start("magic-merging everything…", m.magicCmd(all))
+	case "p":
+		if t := m.curTool(); t != nil {
+			return m.askApply(t.tool.Name+" files", t.entries)
+		}
+	case "P":
+		var all []*Entry
+		for _, t := range m.rows {
+			all = append(all, t.entries...)
+		}
+		return m.askApply("files", all)
+	case "o":
+		m.prefer = RepoSide - m.prefer
+		m.setMsg(fmt.Sprintf("when a magic merge cannot keep both sides, the %s now wins", m.prefer), nil)
+	case "b":
+		m.scr, m.msg = scrBackups, ""
 	case "f":
 		m.scr, m.msg = scrFonts, ""
 		return m.start("checking fonts…", m.loadFonts())
@@ -486,6 +702,24 @@ func (m *model) keyInstall(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) keyBackups(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "q":
+		return m, tea.Quit
+	case "esc", "left", "h", "backspace":
+		m.scr, m.msg = scrTools, ""
+	case "up", "k":
+		m.bc = max(0, m.bc-1)
+	case "down", "j":
+		m.bc = max(0, min(len(m.backups)-1, m.bc+1))
+	case "enter", "r":
+		if m.bc < len(m.backups) {
+			return m.askRestore(m.backups[m.bc])
+		}
+	}
+	return m, nil
+}
+
 func (m *model) keyFiles(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	t, e := m.curTool(), m.curEntry()
 	switch k.String() {
@@ -535,6 +769,8 @@ func (m *model) keyFiles(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.openMerge(e)
+	case "w":
+		return m.start("magic-merging…", m.magicCmd([]*Entry{e}))
 	}
 	return m, nil
 }
@@ -626,9 +862,9 @@ func lastLine(out string, err error) string {
 
 func (m *model) View() string {
 	var b strings.Builder
-	head := stTitle.Render("dot") + stDim.Render("  "+m.repo.Tilde(m.repo.Root))
+	head := stBadge.Render("dot") + stDim.Render("  "+m.repo.Tilde(m.repo.Root))
 	if m.dirty > 0 {
-		head += stUp.Render(fmt.Sprintf("  ● %d uncommitted change(s)", m.dirty))
+		head += stUp.Render("  ● "+plural(m.dirty, "uncommitted change")) + stDim.Render(" (c commits)")
 	}
 	b.WriteString(head + "\n\n")
 
@@ -636,28 +872,34 @@ func (m *model) View() string {
 	switch m.scr {
 	case scrTools:
 		body = m.viewTools()
-		help = keys("↑↓", "move", "enter", "files", "s", "sync tool", "S", "sync all", "i", "install", "f", "fonts", "c", "commit", "r", "rescan", "q", "quit")
+		help = m.keys("↑↓", "move", "enter", "files", "s/S", "sync tool/all", "w/W", "magic merge tool/all", "p/P", "repo → machine tool/all") + "\n" +
+			m.keys("o", "conflict winner", "b", "backups", "i", "install", "f", "fonts", "c", "commit", "r", "rescan", "q", "quit")
 	case scrFiles:
 		body = m.viewFiles()
-		help = keys("enter", "diff", "s", "sync", "p", "repo→machine", "i", "machine→repo", "m", "merge", "a", "sync all", "esc", "back")
+		help = m.keys("enter", "diff", "s", "sync", "p", "repo → machine", "i", "machine → repo", "m", "merge in editor", "w", "magic merge", "a", "sync all", "esc", "back")
 	case scrDiff:
 		b.Reset()
-		b.WriteString(stTitle.Render(m.title) + stDim.Render("  --- repo  +++ machine") + "\n")
+		b.WriteString(stBadge.Render("diff") + "  " + stTitle.Render(m.title) + "  " + stBad.Render("- repo") + "  " + stOK.Render("+ machine") + "\n\n")
 		b.WriteString(m.vp.View() + "\n")
-		b.WriteString(keys("↑↓/pgup/pgdn", "scroll", "esc", "back"))
+		b.WriteString(m.keys("↑↓/pgup/pgdn", "scroll", "esc", "back") + stDim.Render(fmt.Sprintf("   %3.0f%%", m.vp.ScrollPercent()*100)))
 		return b.String()
 	case scrFonts:
 		body = m.viewFonts()
-		help = keys("i", "install", "I", "install missing", "a", "add to fonts.toml", "r", "recheck", "esc", "back")
+		help = m.keys("i", "install", "I", "install missing", "a", "add to fonts.toml", "r", "recheck", "esc", "back")
 	case scrInstall:
 		body = m.viewInstall()
-		help = keys("space", "tick", "a", "all", "n", "none", "b", "packages", "f", "fonts", "enter", "install", "esc", "back")
+		help = m.keys("space", "tick", "a", "all", "n", "none", "b", "packages", "f", "fonts", "enter", "install", "esc", "back")
+	case scrBackups:
+		body = m.viewBackups()
+		help = m.keys("↑↓", "move", "enter", "restore", "esc", "back")
 	}
 	b.WriteString(body)
 	b.WriteString("\n")
 	switch {
 	case m.busy != "":
-		b.WriteString(stDim.Render(m.busy))
+		b.WriteString(m.spin.View() + " " + stDim.Render(m.busy))
+	case m.confirm != nil:
+		b.WriteString(stUp.Bold(true).Render("? "+m.confirm.text) + "  " + m.keys("y", "yes", "n", "no"))
 	case m.msgErr:
 		b.WriteString(stBad.Render("✗ " + m.msg))
 	case m.msg != "":
@@ -667,12 +909,59 @@ func (m *model) View() string {
 	return b.String()
 }
 
-func keys(pairs ...string) string {
-	var parts []string
+// keys renders key hints, wrapped to the window width.
+func (m *model) keys(pairs ...string) string {
+	sep := stDim.Render("  ·  ")
+	var lines []string
+	line := ""
 	for i := 0; i+1 < len(pairs); i += 2 {
-		parts = append(parts, stKey.Render(pairs[i])+" "+stDim.Render(pairs[i+1]))
+		part := stKey.Render(pairs[i]) + " " + stDim.Render(pairs[i+1])
+		switch {
+		case line == "":
+			line = part
+		case m.w > 0 && lipgloss.Width(line+sep+part) > m.w:
+			lines = append(lines, line)
+			line = part
+		default:
+			line += sep + part
+		}
 	}
-	return strings.Join(parts, stDim.Render("  ·  "))
+	return strings.Join(append(lines, line), "\n")
+}
+
+func (m *model) viewBackups() string {
+	var b strings.Builder
+	b.WriteString(stTitle.Render("backups") + stDim.Render("  files dot replaced on this machine, newest first") + "\n\n")
+	if len(m.backups) == 0 {
+		return b.String() + stDim.Render("  none yet — dot saves a file here before overwriting it") + "\n"
+	}
+	avail := max(3, (m.h-10)/2)
+	lo := max(0, min(m.bc-avail+1, len(m.backups)-avail))
+	for i := lo; i < min(len(m.backups), lo+avail); i++ {
+		bk := m.backups[i]
+		when := lipgloss.NewStyle().Width(26).Bold(i == m.bc).Render(stampTime(bk.stamp))
+		n := lipgloss.NewStyle().Width(10).Render(plural(len(bk.files), "file"))
+		fmt.Fprintf(&b, "%s%s %s %s\n", cursor(i == m.bc), when, n, stDim.Render(stampAge(bk.stamp)))
+	}
+	if len(m.backups) > avail {
+		b.WriteString(stDim.Render(fmt.Sprintf("  … %d/%d", m.bc+1, len(m.backups))) + "\n")
+	}
+	bk := m.backups[m.bc]
+	b.WriteString("\n" + stDim.Render("  restoring "+bk.stamp+" brings back:") + "\n")
+	for i, e := range bk.files {
+		if i == avail && len(bk.files) > avail+1 {
+			b.WriteString(stDim.Render(fmt.Sprintf("    … and %d more", len(bk.files)-i)) + "\n")
+			break
+		}
+		b.WriteString("    " + showPath(e.Rel) + "\n")
+	}
+	return b.String()
+}
+
+// showPath renders ~/dir/name with the directory dimmed.
+func showPath(rel string) string {
+	dir, name := filepath.Split(rel)
+	return stDim.Render("~/"+dir) + name
 }
 
 func cursor(on bool) string {
@@ -684,9 +973,40 @@ func cursor(on bool) string {
 
 func (m *model) viewTools() string {
 	if len(m.rows) == 0 {
+		if m.busy != "" {
+			return "\n"
+		}
 		return stDim.Render("  no tools in tools.toml") + "\n"
 	}
 	var b strings.Builder
+	nameW, descW := 0, 0
+	var tApply, tImp, tMerge, tOK int
+	for _, t := range m.rows {
+		nameW, descW = max(nameW, len(t.tool.Name)), max(descW, lipgloss.Width(t.tool.Description))
+		for _, e := range t.entries {
+			switch e.Status {
+			case Synced:
+				tOK++
+			case RepoOnly, RepoAhead:
+				tApply++
+			case LocalOnly, LocalAhead:
+				tImp++
+			case Diverged:
+				tMerge++
+			}
+		}
+	}
+	total := []string{stOK.Render("✓ " + plural(tOK, "file") + " in sync")}
+	if tApply > 0 {
+		total = append(total, stDown.Render(fmt.Sprintf("↓ %d to apply", tApply)))
+	}
+	if tImp > 0 {
+		total = append(total, stUp.Render(fmt.Sprintf("↑ %d to import", tImp)))
+	}
+	if tMerge > 0 {
+		total = append(total, stBad.Render(fmt.Sprintf("⇅ %d to merge", tMerge)))
+	}
+	b.WriteString("  " + strings.Join(total, stDim.Render("  ·  ")) + "\n\n")
 	for i, t := range m.rows {
 		var apply, imp, merge, ok int
 		for _, e := range t.entries {
@@ -703,7 +1023,7 @@ func (m *model) viewTools() string {
 		}
 		var sum []string
 		if len(t.entries) == 0 {
-			sum = append(sum, stDim.Render("nothing found on machine or in repo"))
+			sum = append(sum, stDim.Render("nothing here yet"))
 		} else if apply+imp+merge == 0 {
 			sum = append(sum, stOK.Render(fmt.Sprintf("✓ %d in sync", ok)))
 		}
@@ -716,11 +1036,16 @@ func (m *model) viewTools() string {
 		if merge > 0 {
 			sum = append(sum, stBad.Render(fmt.Sprintf("⇅ %d to merge", merge)))
 		}
-		name := lipgloss.NewStyle().Width(10).Bold(i == m.tc).Render(t.tool.Name)
-		desc := lipgloss.NewStyle().Width(28).Render(stDim.Render(t.tool.Description))
+		nameSt := lipgloss.NewStyle().Width(nameW + 1)
+		if i == m.tc {
+			nameSt = nameSt.Inherit(stCursor)
+		}
+		name := nameSt.Render(t.tool.Name)
+		desc := lipgloss.NewStyle().Width(descW + 1).Render(stDim.Render(t.tool.Description))
 		fmt.Fprintf(&b, "%s%s %s %s\n", cursor(i == m.tc), name, desc, strings.Join(sum, "  "))
 	}
 	b.WriteString("\n" + stDim.Render("  ↓ apply = repo → this machine   ↑ import = this machine → repo   ⇅ merge both") + "\n")
+	b.WriteString(stDim.Render("  magic merge keeps both sides word by word; where it cannot, the ") + stKey.Render(m.prefer.String()) + stDim.Render(" wins") + "\n")
 	return b.String()
 }
 
@@ -738,7 +1063,7 @@ func (m *model) viewFiles() string {
 		}
 		return b.String()
 	}
-	avail := max(3, m.h-9)
+	avail := max(3, m.h-12)
 	lo := 0
 	if m.fc >= avail {
 		lo = m.fc - avail + 1
@@ -747,10 +1072,22 @@ func (m *model) viewFiles() string {
 	for i := lo; i < hi; i++ {
 		e := t.entries[i]
 		st := statusStyle(e.Status).Width(16).Render(e.Status.Symbol() + " " + e.Status.String())
-		fmt.Fprintf(&b, "%s%s ~/%s\n", cursor(i == m.fc), st, e.Rel)
+		fmt.Fprintf(&b, "%s%s %s\n", cursor(i == m.fc), st, showPath(e.Rel))
 	}
 	if hi < len(t.entries) || lo > 0 {
 		b.WriteString(stDim.Render(fmt.Sprintf("  … %d/%d", m.fc+1, len(t.entries))) + "\n")
+	}
+	if e := m.curEntry(); e != nil {
+		hint := ""
+		switch e.Status {
+		case RepoOnly, RepoAhead:
+			hint = "s copies the repo's version onto this machine"
+		case LocalOnly, LocalAhead:
+			hint = "s copies this machine's version into the repo"
+		case Diverged:
+			hint = fmt.Sprintf("changed on both sides — s merges if clean · w magic merge (%s wins ties) · m editor", m.prefer)
+		}
+		b.WriteString("\n" + stDim.Render("  "+hint) + "\n")
 	}
 	return b.String()
 }

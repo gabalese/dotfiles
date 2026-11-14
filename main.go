@@ -3,6 +3,9 @@
 //	dot            interactive TUI
 //	dot status     print what differs between the repo and this machine
 //	dot sync       apply/import/merge everything that does not conflict
+//	dot merge      like sync, but settles conflicts itself (one side wins)
+//	dot apply      overwrite this machine's files with the repo's
+//	dot restore    bring back files a previous run replaced on this machine
 //	dot install    new machine: missing packages, fonts, then apply the repo
 //	dot packages   list Homebrew packages the tools need
 //	dot fonts      list fonts used by the configs
@@ -35,6 +38,12 @@ func main() {
 		cliStatus(repo)
 	case "sync":
 		cliSync(repo, false, nil)
+	case "merge":
+		err = cliMerge(repo, args[1:])
+	case "apply":
+		err = cliApply(repo, args[1:])
+	case "restore":
+		err = cliRestore(repo, args[1:])
 	case "install":
 		err = cliInstall(repo, args[1:])
 	case "fonts":
@@ -60,6 +69,17 @@ func usage() {
   dot              open the TUI
   dot status       show what differs between the repo and this machine
   dot sync         apply/import/merge everything that has no conflicts
+  dot merge [--prefer machine|repo]
+                   sync everything, conflicts included: conflicting lines are
+                   merged word by word, and where both sides changed the same
+                   words the preferred side wins (default: machine)
+  dot apply [tool…]
+                   make this machine match the repo: every tracked file that
+                   differs is overwritten with the repo's copy (files that are
+                   only on this machine are left alone)
+  dot restore      list the backups of replaced machine files, by timestamp
+  dot restore <timestamp>|latest
+                   put the files of that backup back on this machine
   dot install [tool…]
                    install missing packages and fonts, apply the repo — for the
                    named tools, or all of them (--skip a,b  --no-brew  --no-fonts)
@@ -70,7 +90,7 @@ func usage() {
 
 Supported tools and their packages are declared in tools.toml; fonts in fonts/fonts.toml.
 Before overwriting a file on this machine, dot saves it to
-~/.local/state/dotfiles/backup/<timestamp>/.
+~/.local/state/dotfiles/backup/<timestamp>/ — dot restore brings it back.
 `)
 }
 
@@ -134,6 +154,188 @@ func cliSync(r *Repo, install bool, sel Selection) {
 	if len(conflicts) == 0 && len(kept) == 0 {
 		fmt.Println(stOK.Render("everything in sync"))
 	}
+}
+
+// cliMerge syncs everything without asking: conflicts are merged word by
+// word, and what still conflicts is taken from the preferred side.
+func cliMerge(r *Repo, args []string) error {
+	prefer := Machine
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--prefer" && i+1 < len(args):
+			i++
+			a = "--prefer=" + args[i]
+			fallthrough
+		case strings.HasPrefix(a, "--prefer="):
+			switch strings.TrimPrefix(a, "--prefer=") {
+			case "machine", "local":
+				prefer = Machine
+			case "repo":
+				prefer = RepoSide
+			default:
+				return fmt.Errorf("--prefer takes machine or repo")
+			}
+		default:
+			return fmt.Errorf("unknown argument %s", a)
+		}
+	}
+	changed, overridden, failed := 0, 0, 0
+	for _, t := range r.Tools {
+		for _, e := range r.Scan(t) {
+			if e.Status == Synced {
+				continue
+			}
+			f, err := r.ForceMerge(e, prefer)
+			var notes []string
+			if f.Magic > 0 {
+				notes = append(notes, fmt.Sprintf("%d conflict(s) merged word by word", f.Magic))
+			}
+			if f.Taken > 0 {
+				notes = append(notes, fmt.Sprintf("%d conflict(s) taken from the %s copy", f.Taken, prefer))
+			}
+			if f.Whole != "" {
+				notes = append(notes, fmt.Sprintf("%s: whole file taken from the %s copy", f.Whole, prefer))
+			}
+			if len(notes) == 0 {
+				notes = []string{e.Status.String()}
+			}
+			note := stDim.Render("(" + strings.Join(notes, ", ") + ")")
+			switch {
+			case err != nil:
+				failed++
+				fmt.Printf("  %s ~/%s: %v\n", stBad.Render("✗"), e.Rel, err)
+			case f.Taken > 0 || f.Whole != "":
+				changed++
+				overridden++
+				fmt.Printf("  %s ~/%s %s\n", stUp.Render("⇅"), e.Rel, note)
+			default:
+				changed++
+				fmt.Printf("  %s ~/%s %s\n", stOK.Render("✓"), e.Rel, note)
+			}
+		}
+	}
+	if overridden > 0 {
+		lost := "the repo's side of those is in git: git diff"
+		if prefer == RepoSide {
+			lost = "the machine's side of those is in the backup below"
+		}
+		fmt.Println(stDim.Render(fmt.Sprintf("%d file(s) had conflicts settled for the %s — %s", overridden, prefer, lost)))
+	}
+	if _, err := os.Stat(r.BackupDir()); err == nil {
+		fmt.Println(stDim.Render("replaced files saved — undo with: dot restore " + r.stamp))
+	}
+	switch {
+	case failed > 0:
+		return fmt.Errorf("%d file(s) could not be synced", failed)
+	case changed == 0:
+		fmt.Println(stOK.Render("everything in sync"))
+	}
+	return nil
+}
+
+// cliApply overwrites the machine's copy of every tracked file with the
+// repo's. Nothing is merged or imported.
+func cliApply(r *Repo, args []string) error {
+	var sel Selection
+	for _, a := range args {
+		if !slices.ContainsFunc(r.Tools, func(t *Tool) bool { return t.Name == a }) {
+			return fmt.Errorf("unknown tool %q (see tools.toml)", a)
+		}
+		if sel == nil {
+			sel = Selection{}
+		}
+		sel[a] = true
+	}
+	applied, kept, failed := 0, 0, 0
+	for _, t := range r.Tools {
+		if !sel.Has(t.Name) {
+			continue
+		}
+		for _, e := range r.Scan(t) {
+			switch e.Status {
+			case Synced:
+				continue
+			case LocalOnly:
+				kept++
+				continue
+			}
+			if err := r.Apply(e); err != nil {
+				failed++
+				fmt.Printf("  %s ~/%s: %v\n", stBad.Render("✗"), e.Rel, err)
+				continue
+			}
+			applied++
+			fmt.Printf("  %s ~/%s %s\n", stOK.Render("↓"), e.Rel, stDim.Render("(was: "+e.Status.String()+")"))
+		}
+	}
+	if kept > 0 {
+		fmt.Println(stDim.Render(fmt.Sprintf("%d file(s) only on this machine left alone", kept)))
+	}
+	if _, err := os.Stat(r.BackupDir()); err == nil {
+		fmt.Println(stDim.Render("replaced files saved — undo with: dot restore " + r.stamp))
+	}
+	switch {
+	case failed > 0:
+		return fmt.Errorf("%d file(s) could not be applied", failed)
+	case applied == 0:
+		fmt.Println(stOK.Render("machine already matches the repo"))
+	}
+	return nil
+}
+
+// cliRestore lists the backups, or puts one back on the machine. The files
+// it replaces are backed up in turn, so a restore can itself be undone.
+func cliRestore(r *Repo, args []string) error {
+	stamps := r.Backups()
+	if len(args) == 0 {
+		if len(stamps) == 0 {
+			fmt.Println(stDim.Render("no backups yet"))
+			return nil
+		}
+		for _, s := range stamps {
+			files := r.BackupFiles(s)
+			fmt.Printf("%s  %s\n", stTitle.Render(s), stDim.Render(fmt.Sprintf("%d file(s)", len(files))))
+			for _, e := range files {
+				fmt.Printf("  ~/%s\n", e.Rel)
+			}
+		}
+		fmt.Println(stDim.Render("restore one with: dot restore <timestamp>   (or: latest)"))
+		return nil
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("restore takes one timestamp")
+	}
+	stamp := args[0]
+	if stamp == "latest" {
+		if len(stamps) == 0 {
+			return fmt.Errorf("no backups yet")
+		}
+		stamp = stamps[len(stamps)-1]
+	}
+	if !slices.Contains(stamps, stamp) {
+		return fmt.Errorf("no backup %q — run dot restore to list them", stamp)
+	}
+	failed := 0
+	for _, e := range r.BackupFiles(stamp) {
+		same, err := r.Restore(stamp, e)
+		switch {
+		case err != nil:
+			failed++
+			fmt.Printf("  %s ~/%s: %v\n", stBad.Render("✗"), e.Rel, err)
+		case same:
+			fmt.Printf("  %s ~/%s %s\n", stOK.Render("✓"), e.Rel, stDim.Render("(already that version)"))
+		default:
+			fmt.Printf("  %s ~/%s %s\n", stOK.Render("↺"), e.Rel, stDim.Render("(restored from "+stamp+")"))
+		}
+	}
+	if _, err := os.Stat(r.BackupDir()); err == nil {
+		fmt.Println(stDim.Render("replaced files saved — undo with: dot restore " + r.stamp))
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d file(s) could not be restored", failed)
+	}
+	return nil
 }
 
 func cliPackages(r *Repo) {

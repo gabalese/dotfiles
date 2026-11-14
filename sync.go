@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,7 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Status of one tracked file, comparing the repo copy, this machine's copy and
@@ -159,6 +165,57 @@ func (r *Repo) backupLocal(e *Entry) error {
 
 func (r *Repo) BackupDir() string { return filepath.Join(r.StateDir, "backup", r.stamp) }
 
+// Backups lists the backup timestamps, oldest first.
+func (r *Repo) Backups() []string {
+	ds, _ := os.ReadDir(filepath.Join(r.StateDir, "backup"))
+	var out []string
+	for _, d := range ds {
+		if d.IsDir() {
+			out = append(out, d.Name())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// BackupFiles lists what one backup holds. Tools are named as they were then.
+func (r *Repo) BackupFiles(stamp string) []*Entry {
+	root := filepath.Join(r.StateDir, "backup", stamp)
+	tools, _ := os.ReadDir(root)
+	var out []*Entry
+	for _, d := range tools {
+		if !d.IsDir() {
+			continue
+		}
+		set := map[string]bool{}
+		collect(filepath.Join(root, d.Name()), filepath.Join(root, d.Name()), set)
+		t := &Tool{Name: d.Name()}
+		for rel := range set {
+			out = append(out, &Entry{Tool: t, Rel: rel})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Rel < out[j].Rel })
+	return out
+}
+
+// Restore puts a backed-up file back on this machine, after backing up what
+// is there now. The base snapshot is left alone, so the file then shows as
+// changed on the machine. same reports that nothing needed restoring.
+func (r *Repo) Restore(stamp string, e *Entry) (same bool, err error) {
+	src := filepath.Join(r.StateDir, "backup", stamp, e.Tool.Name, e.Rel)
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return false, err
+	}
+	if cur, err := os.ReadFile(r.LocalPath(e)); err == nil && bytes.Equal(cur, data) {
+		return true, nil
+	}
+	if err := r.backupLocal(e); err != nil {
+		return false, err
+	}
+	return false, writeFile(r.LocalPath(e), data, src)
+}
+
 // Apply copies the repo version onto this machine.
 func (r *Repo) Apply(e *Entry) error {
 	data, err := os.ReadFile(r.RepoPath(e))
@@ -230,26 +287,241 @@ func (r *Repo) Merge(e *Entry) (merged []byte, clean bool, err error) {
 			return nil, false, err
 		}
 	}
-	dir, err := os.MkdirTemp("", "dot-merge")
+	out, n, err := mergeFile(lb, bb, rb, baseLabel)
 	if err != nil {
 		return nil, false, err
+	}
+	return out, n == 0, nil
+}
+
+// mergeFile runs `git merge-file machine base repo` and returns the result
+// with the number of conflicting hunks. Extra flags (--ours, --theirs) make
+// git settle those hunks itself, in which case the count is 0.
+func mergeFile(lb, bb, rb []byte, baseLabel string, flags ...string) ([]byte, int, error) {
+	dir, err := os.MkdirTemp("", "dot-merge")
+	if err != nil {
+		return nil, 0, err
 	}
 	defer os.RemoveAll(dir)
 	lf, bf, rf := filepath.Join(dir, "machine"), filepath.Join(dir, "base"), filepath.Join(dir, "repo")
 	for p, d := range map[string][]byte{lf: lb, bf: bb, rf: rb} {
 		if err := os.WriteFile(p, d, 0o600); err != nil {
-			return nil, false, err
+			return nil, 0, err
 		}
 	}
-	out, err := exec.Command("git", "merge-file", "-p", "-L", "machine", "-L", baseLabel, "-L", "repo", lf, bf, rf).Output()
+	args := append([]string{"merge-file", "-p"}, flags...)
+	args = append(args, "-L", "machine", "-L", baseLabel, "-L", "repo", lf, bf, rf)
+	out, err := exec.Command("git", args...).Output()
 	var xe *exec.ExitError
 	switch {
 	case err == nil:
-		return out, true, nil
+		return out, 0, nil
 	case errors.As(err, &xe) && xe.ExitCode() > 0 && xe.ExitCode() < 128:
-		return out, false, nil
+		return out, xe.ExitCode(), nil
 	}
-	return nil, false, fmt.Errorf("git merge-file: %w", err)
+	return nil, 0, fmt.Errorf("git merge-file: %w", err)
+}
+
+// Side is the copy that wins where an automatic merge cannot keep both.
+type Side int
+
+const (
+	Machine Side = iota
+	RepoSide
+)
+
+func (s Side) String() string { return [...]string{"machine", "repo"}[s] }
+
+// Forced says what ForceMerge had to decide by itself for one file.
+type Forced struct {
+	Magic int    // conflicting hunks merged word by word, keeping both sides
+	Taken int    // conflicting hunks taken from the preferred side
+	Whole string // why the whole file was taken from the preferred side, if it was
+}
+
+// ForceMerge is Auto without the need for a human. Changes from both sides
+// are merged as usual. Hunks that conflict line by line are merged word by
+// word ("magic merge": two edits to different parts of the same lines both
+// survive); only where the two sides changed the same words is the hunk taken
+// from the preferred side. Files that cannot be merged at all (binary), or
+// whose merge would no longer parse as JSON/TOML, are taken whole from it.
+func (r *Repo) ForceMerge(e *Entry, prefer Side) (f Forced, err error) {
+	if e.Status != Diverged {
+		return f, r.Auto(e)
+	}
+	whole := func(why string) (Forced, error) {
+		if prefer == RepoSide {
+			return Forced{Whole: why}, r.Apply(e)
+		}
+		return Forced{Whole: why}, r.Import(e)
+	}
+	rb, err := os.ReadFile(r.RepoPath(e))
+	if err != nil {
+		return f, err
+	}
+	lb, err := os.ReadFile(r.LocalPath(e))
+	if err != nil {
+		return f, err
+	}
+	if isBinary(rb) || isBinary(lb) {
+		return whole("binary")
+	}
+	bb, err := os.ReadFile(r.basePath(e))
+	if err != nil {
+		if bb, err = commonLines(r.RepoPath(e), r.LocalPath(e)); err != nil {
+			return f, err
+		}
+	}
+	merged, magic, taken, err := magicMerge(lb, bb, rb, prefer)
+	if err != nil {
+		return f, err
+	}
+	if parses(e.Rel, lb) && parses(e.Rel, rb) && !parses(e.Rel, merged) {
+		return whole("merge would break the " + strings.TrimPrefix(filepath.Ext(e.Rel), ".") + " syntax")
+	}
+	return Forced{Magic: magic, Taken: taken}, r.Resolve(e, merged)
+}
+
+// Conflict markers long enough that no config line is mistaken for one.
+const markerSize = 40
+
+var (
+	markOurs   = strings.Repeat("<", markerSize) + " "
+	markBase   = strings.Repeat("|", markerSize) + " "
+	markSplit  = strings.Repeat("=", markerSize)
+	markTheirs = strings.Repeat(">", markerSize) + " "
+)
+
+// magicMerge merges machine and repo over base and settles every conflict:
+// each conflicting hunk is merged again word by word, and if that still
+// conflicts it is taken from the preferred side.
+func magicMerge(lb, bb, rb []byte, prefer Side) (out []byte, magic, taken int, err error) {
+	sideFlag := "--ours" // argument order is machine base repo
+	if prefer == RepoSide {
+		sideFlag = "--theirs"
+	}
+	plain := func() ([]byte, int, int, error) { // no word-level pass
+		out, n, err := mergeFile(lb, bb, rb, "base")
+		if err != nil || n == 0 {
+			return out, 0, 0, err
+		}
+		out, _, err = mergeFile(lb, bb, rb, "base", sideFlag)
+		return out, 0, n, err
+	}
+	for _, in := range [][]byte{lb, bb, rb} { // a line that would read as a marker
+		for _, line := range bytes.Split(in, []byte("\n")) {
+			l := string(line)
+			if strings.HasPrefix(l, markOurs) || strings.HasPrefix(l, markBase) || strings.HasPrefix(l, markTheirs) ||
+				strings.TrimRight(l, "\r") == markSplit {
+				return plain()
+			}
+		}
+	}
+	marked, n, err := mergeFile(lb, bb, rb, "base", "--zdiff3", fmt.Sprintf("--marker-size=%d", markerSize))
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if n == 0 {
+		return marked, 0, 0, nil
+	}
+	var buf, ours, base, theirs bytes.Buffer
+	cur := &buf
+	for _, line := range bytes.SplitAfter(marked, []byte("\n")) {
+		l := string(line)
+		switch {
+		case cur == &buf && strings.HasPrefix(l, markOurs):
+			cur = &ours
+		case cur == &ours && strings.HasPrefix(l, markBase):
+			cur = &base
+		case (cur == &ours || cur == &base) && strings.TrimRight(l, "\r\n") == markSplit:
+			cur = &theirs
+		case cur == &theirs && strings.HasPrefix(l, markTheirs):
+			if words, ok := mergeWords(ours.Bytes(), base.Bytes(), theirs.Bytes()); ok {
+				magic++
+				buf.Write(words)
+			} else if taken++; prefer == RepoSide {
+				buf.Write(theirs.Bytes())
+			} else {
+				buf.Write(ours.Bytes())
+			}
+			ours.Reset()
+			base.Reset()
+			theirs.Reset()
+			cur = &buf
+		default:
+			cur.Write(line)
+		}
+	}
+	if cur != &buf || magic+taken != n {
+		return plain() // markers did not add up; do not guess
+	}
+	return buf.Bytes(), magic, taken, nil
+}
+
+// mergeWords three-way merges one hunk token by token. It succeeds when the
+// two sides changed different words.
+func mergeWords(ours, base, theirs []byte) ([]byte, bool) {
+	if !utf8.Valid(ours) || !utf8.Valid(base) || !utf8.Valid(theirs) {
+		return nil, false // tokenising would mangle the bytes
+	}
+	out, n, err := mergeFile(tokenLines(ours), tokenLines(base), tokenLines(theirs), "base")
+	if err != nil || n > 0 {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	for _, l := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
+		if l == "" {
+			continue
+		}
+		tok, err := strconv.Unquote(l)
+		if err != nil {
+			return nil, false
+		}
+		buf.WriteString(tok)
+	}
+	return buf.Bytes(), true
+}
+
+// tokenLines splits text into words, runs of blanks and single other
+// characters, and writes one quoted token per line so that a line merge of
+// the result is a word merge of the text.
+func tokenLines(text []byte) []byte {
+	class := func(r rune) int {
+		switch {
+		case r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r):
+			return 1
+		case r == ' ' || r == '\t':
+			return 2
+		}
+		return 0 // punctuation and newlines stand alone
+	}
+	var buf bytes.Buffer
+	rs := []rune(string(text))
+	for i := 0; i < len(rs); {
+		j := i + 1
+		if c := class(rs[i]); c != 0 {
+			for j < len(rs) && class(rs[j]) == c {
+				j++
+			}
+		}
+		buf.WriteString(strconv.Quote(string(rs[i:j])))
+		buf.WriteByte('\n')
+		i = j
+	}
+	return buf.Bytes()
+}
+
+// parses reports whether data is valid for the format its extension names.
+// Unknown formats never parse, so the check is skipped for them.
+func parses(rel string, data []byte) bool {
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".json":
+		return json.Valid(data)
+	case ".toml":
+		var v map[string]any
+		return toml.Unmarshal(data, &v) == nil
+	}
+	return false
 }
 
 func commonLines(a, b string) ([]byte, error) {

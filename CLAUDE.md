@@ -38,6 +38,23 @@ between this repo and the current Mac. Public repo: github.com/gabalese/dotfiles
   `tea.ExecProcess`; result is rejected if markers remain.
 - Anything overwritten on the machine is first copied to
   `~/.local/state/dotfiles/backup/<timestamp>/`.
+- **Magic merge** (`dot merge`, TUI `w`/`W`) is a sync that never leaves a
+  conflict (`ForceMerge`/`magicMerge` in `sync.go`): each conflicting hunk
+  (parsed from `git merge-file --zdiff3` with 40-char markers) is re-merged word
+  by word — tokens written one per line and fed to `git merge-file` again — so
+  edits to different words of the same lines both survive. Hunks that still
+  conflict are taken from `--prefer machine|repo` (default machine; TUI `o`).
+  Binary files, and JSON/TOML whose merge would stop parsing, are taken whole
+  from that side. Plain sync (`dot sync`, `s`) and `dot install` still leave
+  conflicts for a human.
+- **`dot apply [tool…]`** (TUI `p`/`P` on the tool list, with a y/n confirm)
+  overwrites machine files with the repo's; machine-only files are left alone.
+  **`dot restore`** (TUI `b`) lists backups; `dot restore <timestamp>|latest`
+  puts one back, backing up what it replaces. It does not touch the base
+  snapshot, so restored files show as "machine newer" — a later sync would
+  import them into the repo.
+- The TUI calls `Repo.Restamp()` before each operation so one session's backups
+  don't overwrite each other.
 - `dot install` never imports machine-only files; it only brings the repo down
   and clean-merges. Conflicts are left for the TUI.
 
@@ -56,7 +73,9 @@ HOME=$SANDBOX/home DOTFILES_DIR=$SANDBOX/repo XDG_STATE_HOME=$SANDBOX/state ./bi
 
 Copy real configs into `$SANDBOX/home` and `tools.toml`/`fonts/` into
 `$SANDBOX/repo`. The TUI can be driven headlessly with `/usr/bin/expect`, using a
-fake `EDITOR` script to resolve conflicts. Keys sent quickly arrive merged ("jjj");
+fake `EDITOR` script to resolve conflicts. Under a bare pty the first frame
+takes ~5s unless the driver answers the terminal's colour/cursor queries
+(`\e]11;rgb:0000/0000/0000\e\\` and `\e[1;1R`). Keys sent quickly arrive merged ("jjj");
 the TUI splits them, but pause ~0.2s between sends anyway.
 
 ## Ghostty specifics
