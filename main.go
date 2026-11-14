@@ -198,6 +198,7 @@ type InstallOpts struct {
 	Tools   Selection
 	NoBrew  bool
 	NoFonts bool
+	Pulled  []string // "zsh (required by pure)": tools added through `requires`
 }
 
 // Args renders the options back into `dot install` arguments.
@@ -254,6 +255,21 @@ func parseInstall(r *Repo, args []string) (o InstallOpts, pick bool, err error) 
 				o.Tools[t.Name] = true
 			}
 		}
+		// bring along what the selected tools require; an explicit --skip still wins
+		for changed := true; changed; {
+			changed = false
+			for _, t := range r.Tools {
+				if !o.Tools[t.Name] {
+					continue
+				}
+				for _, n := range t.Requires {
+					if !o.Tools[n] && !slices.Contains(skip, n) {
+						o.Tools[n], changed = true, true
+						o.Pulled = append(o.Pulled, n+" (required by "+t.Name+")")
+					}
+				}
+			}
+		}
 		for _, n := range skip {
 			delete(o.Tools, n)
 		}
@@ -285,6 +301,9 @@ func runInstall(r *Repo, o InstallOpts) {
 			return
 		}
 		fmt.Println(stDim.Render("tools: " + strings.Join(names, ", ")))
+		if len(o.Pulled) > 0 {
+			fmt.Println(stDim.Render("added: " + strings.Join(o.Pulled, ", ")))
+		}
 	}
 	if !o.NoBrew {
 		fmt.Println(stTitle.Render("==> packages"))

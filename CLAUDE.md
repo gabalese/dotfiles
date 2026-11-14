@@ -6,7 +6,8 @@ between this repo and the current Mac. Public repo: github.com/gabalese/dotfiles
 ## Layout
 
 - `tools.toml` — registry of supported tools: `paths` (relative to `$HOME`),
-  `ignore` globs, `fonts` regexes, `brew`/`cask` packages. Adding a tool should
+  `ignore` globs, `fonts` regexes, `brew`/`cask` packages, `requires` (other
+  tools `dot install <tool>` brings along; `--skip` still wins). Adding a tool should
   never need Go changes.
 - `packages/<tool>/<path>` — repo copy of `$HOME/<path>`.
 - `fonts/fonts.toml` — fonts the configs use (`cask`, `files` → `fonts/files/<dir>/`, or `builtin`).

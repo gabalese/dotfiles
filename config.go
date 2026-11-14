@@ -16,11 +16,12 @@ import (
 type Tool struct {
 	Name         string   `toml:"-"`
 	Description  string   `toml:"description"`
-	Paths        []string `toml:"paths"`  // files or directories, relative to $HOME
-	Ignore       []string `toml:"ignore"` // globs on basename or relative path; "dir/**" excludes a subtree
-	FontPatterns []string `toml:"fonts"`  // regexes whose first group is a font family name
-	Brew         []string `toml:"brew"`   // Homebrew formulae the tool needs ("user/tap/name" auto-taps)
-	Cask         []string `toml:"cask"`   // Homebrew casks the tool needs
+	Paths        []string `toml:"paths"`    // files or directories, relative to $HOME
+	Ignore       []string `toml:"ignore"`   // globs on basename or relative path; "dir/**" excludes a subtree
+	FontPatterns []string `toml:"fonts"`    // regexes whose first group is a font family name
+	Brew         []string `toml:"brew"`     // Homebrew formulae the tool needs ("user/tap/name" auto-taps)
+	Cask         []string `toml:"cask"`     // Homebrew casks the tool needs
+	Requires     []string `toml:"requires"` // other tools `dot install` brings along with this one
 }
 
 // Font is one entry of fonts/fonts.toml.
@@ -112,6 +113,13 @@ func LoadRepo() (*Repo, error) {
 		r.Tools = append(r.Tools, t)
 	}
 	sort.Slice(r.Tools, func(i, j int) bool { return r.Tools[i].Name < r.Tools[j].Name })
+	for _, t := range r.Tools {
+		for _, n := range t.Requires {
+			if r.Tool(n) == nil {
+				return nil, fmt.Errorf("tools.toml: %s requires unknown tool %q", t.Name, n)
+			}
+		}
+	}
 
 	var ff struct {
 		Font []*Font `toml:"font"`
@@ -153,4 +161,14 @@ func matchAny(pats []string, rel string) bool {
 
 func (r *Repo) ignored(t *Tool, rel string) bool {
 	return matchAny(r.Ignore, rel) || matchAny(t.Ignore, rel)
+}
+
+// Tool returns the tool with that name, or nil.
+func (r *Repo) Tool(name string) *Tool {
+	for _, t := range r.Tools {
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
 }

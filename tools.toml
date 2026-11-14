@@ -7,6 +7,7 @@
 #   fonts   regexes; the first group is a font family the config uses
 #   brew    Homebrew formulae the tool needs ("user/tap/name" auto-taps)
 #   cask    Homebrew casks the tool needs
+#   requires  other tools `dot install <tool>` brings along (unless --skip'd)
 #           `dot install` installs whichever are missing; a binary of the same
 #           name on PATH, or the cask's app in /Applications, counts as present
 
@@ -85,3 +86,5 @@ description = "Pure zsh prompt"
 # Pure has no config file of its own: its zstyles live here, sourced from .zshrc.
 paths = [".config/zsh/pure.zsh"]
 brew = ["pure"]
+# .zshrc sources pure.zsh
+requires = ["zsh"]
